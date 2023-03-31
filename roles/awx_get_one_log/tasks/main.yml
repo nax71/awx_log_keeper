@@ -1,0 +1,56 @@
+---
+# tasks file for awx_get_one_log
+
+- name: "Working on job {{ job_id }}"
+  block:
+    - name: "Get info for {{ job_id }}"
+      ansible.builtin.uri:
+        url: "{{ awx.tower_base_url }}/api/v2/jobs/{{ job_id }}"
+        user: "{{ awx.tower_username }}"
+        password: "{{ awx.tower_password }}"
+        method: GET
+        force_basic_auth: true
+        # status_code: 200
+        body_format: json
+        return_content: true
+        # dest: "{{ log_path_root }}/log_{{ job_id }}.log"
+      register: answ
+
+    - name: "Store some variables for easy use"
+      ansible.builtin.set_fact:
+        output_path: "{{ log_path_root }}/{{ (answ.json.started | to_datetime('%Y-%m-%dT%H:%M:%S.%fZ')).strftime('%d-%m-%Y') }}/{{ job_id }}"
+
+    - name: "Built path to store the logs info"
+      ansible.builtin.file:
+        path: "{{ output_path }}"
+        recurse: true
+        state: directory
+
+    - name: "Write Log for one job_id "
+      ansible.builtin.uri:
+        url: "{{ awx.tower_base_url }}/api/v2/jobs/{{ job_id }}/stdout/?format=txt"
+        user: "{{ awx.tower_username }}"
+        password: "{{ awx.tower_password }}"
+        method: GET
+        force_basic_auth: true
+        status_code: 200
+        body_format: json
+        return_content: true
+        dest: "{{ output_path }}/output_{{ job_id }}_{{ (answ.json.started | to_datetime('%Y-%m-%dT%H:%M:%S.%fZ')).strftime('%d%m%Y_%H%M%S') }}.log"
+      register: answ_log
+
+    - name: "Write the job id too ... "
+      ansible.builtin.copy:
+        content: "{{ answ.json | to_nice_json(indent=2) }}"
+        dest: "{{ output_path }}/{{ job_id }}_{{ (answ.json.started | to_datetime('%Y-%m-%dT%H:%M:%S.%fZ')).strftime('%d%m%Y_%H%M%S') }}.json"
+        mode: 0644
+
+    - name: "Out the logfile path"
+      ansible.builtin.debug:
+        msg: "Write Log for job id {{ job_id }} to {{ output_path }}"
+
+  rescue:
+    - name: "Ignore on http error"
+      ansible.builtin.debug:
+        msg: "Ignore {{ job_id }}  {{ answ.content }}"
+...

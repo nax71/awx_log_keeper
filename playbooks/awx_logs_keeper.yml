@@ -1,0 +1,112 @@
+---
+
+- name: "Get AWX logs playbook"
+  hosts: "{{ target | default('localhost') }}"
+  gather_facts: true
+  vars_files:
+    - vars/secret.yml
+    - vars/awx_logs_keeper_vars.yml
+  pre_tasks:
+    - name: "Print facts"
+      ansible.builtin.debug:
+        msg: "{{ ansible_distribution }}"
+
+    - name: "Validate job_id interval"
+      ansible.builtin.set_fact:
+        use_job_id_interval: true
+      when: (job_id_interval is defined) and
+            (job_id_interval.start | int is defined) and
+            (job_id_interval.end | int is defined) and
+            (job_id_interval.end) and
+            (job_id_interval.start) and
+            (job_id_interval.end >= job_id_interval.start)
+
+    - name: "Validate date interval"
+      vars:
+        fmt: "%Y-%m-%dT%H:%M:%S"
+      # ansible.builtin.debug:
+      #    msg: "Work on date interval from {{ date_interval.start }} to {{ date_interval.end }}"
+      ansible.builtin.set_fact:
+        use_date_interval: true
+      when: (date_interval is defined) and
+            (date_interval.start is defined) and
+            (date_interval.end is defined) and
+            (date_interval.start | to_datetime(fmt)) and
+            (date_interval.end | to_datetime(fmt)) and
+            (((date_interval.end | to_datetime(fmt)).strftime('%s')) >= ((date_interval.start | to_datetime(fmt)).strftime('%s')))
+
+    - name: "Print job_id interval if check pass"
+      ansible.builtin.debug:
+        msg:
+          - "Work on date interval from {{ date_interval.start }} to {{ date_interval.end }}"
+      when: (use_date_interval is defined)
+
+    - name: "Print date interval if check pass"
+      ansible.builtin.debug:
+        msg: "Work on job_id interval from job_id {{ job_id_interval.start }} to {{ job_id_interval.end }}"
+      when: (use_job_id_interval is defined)
+
+  tasks:
+    - name: "Write log file for given job_id list"
+      vars:
+        job_id: "{{ item }}"
+      ansible.builtin.include_role:
+        name: awx_get_one_log
+      with_sequence: start={{ job_id_interval.start }} end={{ job_id_interval.end }}
+      when: use_job_id_interval is defined
+
+    - name: "Date interval treatement block"
+      block:
+        - name: "Get id's between dates"
+          ansible.builtin.uri:
+            url: "{{ awx.tower_base_url }}/api/v2/jobs/?started__gte={{ date_interval.start }}&finished__lte={{ date_interval.end }}"
+            user: "{{ awx.tower_username }}"
+            password: "{{ awx.tower_password }}"
+            method: GET
+            force_basic_auth: true
+            # status_code: 200
+            body_format: json
+            return_content: true
+          register: answ
+          when: use_date_interval is defined
+
+        - name: "Write log file for job_id list between dates"
+          # {{ item }} {{ log_path_root }}/log_{{ item }}.log
+          vars:
+            job_id: "{{ item.id }}"
+          ansible.builtin.include_role:
+            name: awx_get_one_log
+          loop: "{{ answ.json.results }}"
+          when: answ is defined
+      rescue:
+        - name: "Rescue block of failing http request"
+          ansible.builtin.debug:
+            msg: "Ignore {{ job_id }}  {{ answ.content }}"
+
+  post_tasks:
+    - name: "Remove old files"
+      tags:
+        - purge
+      block:
+      - name: " " 
+        ansible.builtin.debug:
+          msg: "Purge olf files older than {{ keep_log_day }}d"
+        
+      - name: "Find old files" 
+        ansible.builtin.find:
+          paths:  "{{ log_path_root }}"
+          age: "{{ keep_log_day }}d"
+          file_type: directory
+          recurse: true
+        register: old_files
+
+      - name: "Remove old files" 
+        ansible.builtin.file:
+          path: "{{ item.path }}"
+          state: absent
+        with_items: "{{ old_files.files }}"
+        
+      when: keep_log_day is defined
+
+
+...
